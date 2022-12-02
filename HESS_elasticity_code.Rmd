@@ -1,0 +1,816 @@
+---
+title: "Elasticity curves describe streamflow sensitivity to precipitation across the entire flow distribution"
+author: "Bailey J. Anderson"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, echo = TRUE, message = TRUE, warning = FALSE}
+knitr::opts_chunk$set(
+	echo = TRUE,
+	message = TRUE,
+	warning = FALSE
+)
+knitr::opts_knit$set(root.dir = "C:/Users/lina3120/Documents/temp_projects/elasticity_curve/scripts/final_scripts/toy_example")
+```
+
+This script performs the analysis associated with the the manuscript titled: Elasticity curves describe streamflow sensitivity to precipitation across the entire flow distribution, submitted to HESS in 2022. 
+
+```{r preamble, include = TRUE}
+#set up the code and read in libraries.
+rm(list=ls(all=TRUE))
+
+# Clear the Console
+cat("\014")
+
+library(dataRetrieval); library(dplyr);  library(tidyr); library(tools); library(data.table); library(prism);
+library(ggplot2); library(lubridate); library(delayedflow); library(ggpubr); library(rstatix); library(car); library(scales);
+library(ggridges); library(rgdal); library(stringr); library(patchwork); library(factoextra);library(cluster); library(plm); library(raster); library(lmtest); library(gtools); library(randomForest); library(varImp); library(smotefamily); library(lemon); library(kableExtra)
+
+```
+
+A series of functions were created to complete this work. These have not yet been converted into a package, and are included here in order to make this file self contained. These are used throughout the subsequent sections. 
+
+```{r functions, echo = TRUE, message=FALSE, warning=FALSE, include = TRUE}
+#####################################################################
+# Section 1: these functions were made by the authors of this paper #
+#####################################################################
+
+#function to fit linear model to all sites in study 
+#where "l" is a 2 column list value containing the staid and relevant season
+# and "forms" is a list of formulas to iterate through 
+#returns a data frame containing all elasticity values for all given season and site, 
+#run within lapply and it returns all sites and time steps.
+
+multi_glm <- function(l, forms = formulas, dataframe = df){ #l <- loop_vals[[1]]
+  
+  #start time stamp allows you to see how long it takes to calculate each catchments elasticity data
+  start <- Sys.time()
+  
+  x <- l[[1]]
+  s <- l[[2]]
+  
+  #rshape the dataframe depending on if seasonal of annual values
+  if(s == "annual"){
+    data <-  dataframe[dataframe$STAID == x,-c(2, 4:24, 46, 49:51)] %>% distinct()
+  }else{
+    data <- dataframe[dataframe$STAID == x & dataframe$season == s,]  
+    data$seasonal_meanP[data$seasonal_meanP == "-Inf" | data$seasonal_meanP == "Inf"] <- 0 # replace the rare inf value due to 0 ppt seasons
+    
+  }
+  
+  
+  # helper function to apply the code to each component of the dataframe
+  # where "f" is a list of formulas
+  glm_helper <- function(f){# f<-1
+    if(nrow(unique(data[match(substr(ys[f], 1, nchar(ys[f])-2),names(data))])) >5 ){
+      res <- lm(formula = as.formula(forms[f]), data = data)
+      
+      #extract residuals
+      v <- res$residuals
+      attr (v,"std") <- NULL 
+      # qqnorm(res$residuals, main = paste(forms[f], x))
+      # qqline(res$residuals,  probs = c(0.05, 0.95))
+      # plotNormalHistogram( res$residuals, prob = F,
+      # length = 1000 )  
+      
+      #perform residual tests
+      norm <- shapiro.test(v)
+      durb <- durbinWatsonTest(v)
+      
+      #extract standard errors and P values in sunken env to hide print outs. 
+      sink("~temp.txt")
+      #se <- summary(res)[,2][2:3]
+      se <- summary(res)[[4]][2:3,2]
+      #p <- summary(res)[,4][2:3]
+      p <- summary(res)[[4]][2:3,4]
+      sink()
+
+      #extract aic, r squared, coefficients (elasticity)
+      aic <- AIC(res)
+      rsq <- summary(res)[[8]]
+      res <- data.frame(res$coefficients[2:3])
+      names(res)[1] <- "coef" 
+      
+      #generate confidence intervals
+      res$lower <- as.numeric( c(res$coef-(1.96*se)))
+      res$upper <- as.numeric( c(res$coef+(1.96*se)))
+      
+      #clean and combine into dataframe 
+      res$p <- round(p, 3)
+      res$rsq <- rsq
+      res$aic <- aic
+      res$Q <- str_extract_all(as.character(forms[[f]]),"\\(?[0-9,.]+\\)?")[[1]]
+      res$flow_season <- s
+      res$ppt_season <- s #substr(row.names(res)[1],1,nchar(row.names(res)[1])-3) 
+      res$STAID <- x
+      res$variable <- c("ppt", "pet")
+      res$norm <- norm$p.value
+      res$durb <- durb
+    }else{res <- data.frame(coef= c("NA", "NA"), lower = c("NA", "NA"), 
+                            upper = c("NA", "NA"), p = c("NA", "NA"), 
+                            rsq = c("NA", "NA"), aic = c("NA", "NA"))}
+    
+    res$Q <- str_extract_all(as.character(forms[[f]]),"\\(?[0-9,.]+\\)?")[[1]]
+    res$flow_season <- s
+    res$ppt_season <- s #substr(row.names(res)[1],1,nchar(row.names(res)[1])-3) 
+    res$STAID <- x
+    res$variable <- c("ppt", "pet")
+    #print(f)
+    return(res)  
+  } 
+  if(s == "annual"){
+    all_res <- lapply(1:21, glm_helper)
+    
+  }else{ all_res <- lapply(22:length(forms), glm_helper)}
+  all_res <- do.call(rbind, all_res)
+  
+  all_res$Q <- as.numeric(all_res$Q)
+  all_res <- all_res[order(all_res$Q),]
+  
+  
+  finish <- Sys.time()
+  #print total run time
+  print(as.character(x)); print(as.character(s));print(which(sites == x)); print(finish-start)
+  file.remove("~temp.txt")
+  
+  #return complete e[c] data
+  return(all_res)
+  
+}
+
+
+#funciton to cluster data into a number of different clusters so you can look at the geographic distributions of different cluster divisions. 
+# where "k" is a list of values (e.g. 2:50
+auto_cluster <- function(k){
+  
+  #cut the dendrogram into 4 clusters
+  groups <- cutree(final_clust, k = 2)
+  
+  #find number of observations in each cluster
+  table(groups)
+  
+  #append cluster labels to original data
+  final_data <- cbind(glms, cluster = groups)
+  
+  #find mean values for each cluster
+  aggregate(final_data, by=list(cluster=final_data$cluster), mean)
+  final_data$clustercount <- k
+  final_data$STAID <- row.names(final_data)
+  
+  return(final_data)
+}
+
+
+#function to estimate the elasticity of a cluster using a panel regression approach
+# where "Qlinc" is a 2 column list value containing the staid and relevant season and "d" is a dataframe
+# containing panel formatted (long format) streamflow quantile and climatological data
+multi_plm <-function(QLinc, d){# d <- df; QLinc <- 100
+  print(QLinc)
+  keep <-  QL[[QLinc]][[2]]
+  keep
+  
+  Q <- QL[[QLinc]][[1]]
+  nQ <- names(d[Q])
+  k <- d[Q]
+  head(k)
+  
+  season <-  QL[[QLinc]][[2]]
+  season
+  
+  #create the regression equations based on the time scale and simplify the dataframe. Written this way so i can automate it all at once. 
+  if(season == "annual"){
+    x <- c( "annual_meanP*cluster", "annual_PET*cluster")
+  
+    d <- d[c(1,2, which(names(d) == names(k)), which(names(d) == "annual_PET"), which(names(d) == "annual_meanP"))]
+    d$season <- "annual"
+    
+    d <- merge(d, clusters[1:3], by = c("STAID", "season"))
+    d <- d %>%
+       mutate_at(vars(c(4:6)), round, 3)%>%distinct()
+    data <-d
+  }else{
+    x <- c( "seasonal_meanP*cluster", "seasonal_PET*cluster")
+    
+    d <- merge(d, clusters, by = c("STAID", "season"))
+    
+    d$seasonal_PET <- round(d$seasonal_PET, 3)
+    d <- d[d$season == QL[[QLinc]][[2]],]%>%distinct()
+    data <- d[c(1,3, Q, which(names(d) == "seasonal_meanP"),  which(names(d) == "seasonal_PET"),  which(names(d) == "cluster"))] %>%
+      distinct()
+    if(any(data$seasonal_meanP == "-Inf")){
+      data <- data[-which(data$seasonal_meanP == "-Inf"),]
+    }
+    
+  }
+  
+  #convert forms to actual formulas
+  y <- paste(nQ, "~", collapse = " ")
+  form <-paste(y, paste(x, collapse = "+"), collapse = " ")
+  form <- as.formula(form)
+  
+  #name the model
+  model_name <- paste0("model_", nQ)
+  
+  #order data
+  data <- data[order(runif(nrow(data))), ]
+  
+  
+  #fit panel model 
+  plm_test <- plm(form, data = data, model = "within", 
+                  index = c("STAID", "Year"))
+  #replace standard errors with standard errors clustered at the streamgage level
+  test_plm_robust <- coeftest(plm_test, vcov=vcovHC(plm_test,type="HC0",cluster="group"))
+  sum_test <- summary(plm_test)  
+  sum_test$coefficients[,2:4] <- test_plm_robust[,2:4]
+
+
+  #extract coefficients
+  coefs <- data.frame(coef(sum_test))[,c(1:2, 4)]
+  coefs <- coefs[c(grep(pattern = "meanP", x = row.names(coefs)), grep(pattern = "PET", x = row.names(coefs))),]
+  
+  # add pieces together
+  coefs$Estimate[2:(nrow(coefs)/2)] <- coefs[1,1]+coefs[2:(nrow(coefs)/2),1]
+  coefs$Estimate[((nrow(coefs)/2)+2):nrow(coefs)] <- coefs[4, 1]+coefs[((nrow(coefs)/2)+2):nrow(coefs),1]
+  
+  #calclate confidence intervals
+  confU <- as.numeric(c(coefs$Estimate+(1.96*coefs$Std..Error)))
+  confL <-as.numeric( c(coefs$Estimate-(1.96*coefs$Std..Error))) 
+  coefs$upper <- round(confU, 4)
+  coefs$lower <- round(confL, 4)
+  
+  #combine it all 
+  coefs$`Std..Error` <- round(coefs$`Std..Error`, 4)
+  names(coefs)[3] <- "P_value"
+  coefs$P_value <- round(coefs$P_value, 4)
+  coefs$variable[(nrow(coefs)/2+1):nrow(coefs)] <- "pet"
+  coefs$variable[1:nrow(coefs)/2] <- "ppt"
+  
+  if(season == "annual"){
+    coefs$quantile <- substr(nQ, 2, nchar(nQ))
+  }else{
+    coefs$quantile <- substr(nQ, 6, nchar(nQ))
+  }
+  
+  
+  coefs$variable_quantile <- c(mixedsort(unique(data$cluster)))
+  
+  #count number of sites in each group
+  totalN <- data %>%
+    group_by(cluster)%>%
+    dplyr::summarise(totalN = n_distinct(STAID))
+  
+  coefs$totalN <-totalN$total
+  coefs$model <- season
+  
+  
+  
+  resid_df <- cbind(data, residuals(sum_test))
+  assign(paste0(model_name, season, "resid"), resid_df, env=.GlobalEnv)
+  return(coefs)
+  
+}
+
+
+# function to iterate through samples and fit random forest model with percentage of the least populous cluster
+# where "season" is the season of interest (winter, spring, summer, fall, annual); "x" is the number of sites to use in the training set
+# "y" is the number of samples to use in the testing set; df is a dataframe which contains the cluster groups and the catchment attributes of all sites in all seasons
+iter_rf <- function(season, x, y, data = df ){#season = "annual"; x = round(min(count$count)*.8); y = (min(count$count)-round(min(count$count)*.8))
+  
+  ##training and predicting samples
+  #reduce dataframe to season of interest; select a random saample of catchments and rebuild as a testing dataframe
+  datas <- data[data$season == season,]
+  rando_data <- datas[sample(1:nrow(datas)),]
+  one <- rando_data[rando_data$cluster == "1",]
+  train1 <- one[1:x,]
+  test1 <- one[(x+1):(x+y),]
+  two <- rando_data[rando_data$cluster == "2",]
+  train2 <- two[1:x,]
+  test2 <- two[(x+1):(x+y),]
+  if(season != "fall"& season != "spring" ){
+    three <- rando_data[rando_data$cluster == "3",]
+    train3 <- three[1:x,]
+    test3 <- three[(x+1):(x+y),]
+    train <- do.call(rbind,list(train1, train2, train3))
+    tester <- do.call(rbind,list(test1, test2, test3))
+  }else{
+    train <- do.call(rbind,list(train1, train2))
+    tester <- do.call(rbind,list(test1, test2))
+  }
+  
+  
+  #fit the random forest model 
+  model <- randomForest(factor(cluster) ~ fdc_b+fdc_b_l+fdc_b_u+BFI5+DFI90+peak_event+
+                          low_event+ELEV_MEAN_M_BASIN+
+                          SLOPE_PCT +season_gapmin+ season_gapmin_max+rc+
+                          DRAIN_SQKM+ aridity+snow_frac+LAT+max_pptseason+
+                          annual_temp+min_pptseason+max_flow+min_flow+
+                          DRAIN_SQKM+season_gapmax,
+                        data = train, importance=TRUE)
+  
+  #predict the test set
+  pred <- predict(model, tester)
+  
+  #see how often it matches
+  diff <-as.numeric(tester$cluster)-as.numeric(pred)
+  sum_diff <- sum(abs(diff) > 0)
+  #calculate accuracy
+  accuracy <- (sum_diff/length(pred))*100
+  
+  #extract variable importance metrics
+  imp <- as.data.frame(importance(model))
+  mean_decrease <- imp %>% arrange(desc(MeanDecreaseAccuracy)) %>% 
+    slice(1:3)
+  mean_decrease <- c(row.names(mean_decrease))
+  gini <-  imp %>% arrange(desc(MeanDecreaseGini)) %>% 
+    slice(1:3)
+  gini <-  c(row.names(gini))
+  
+  act_confusion <- table(pred, as.numeric(tester$cluster))
+  
+  if(season != "fall" & season != "spring"  ){
+    precision1 <- act_confusion[1]/sum(act_confusion[,1])
+    precision2 <- act_confusion[2,2]/sum(act_confusion[,2])
+    precision3 <- act_confusion[3,3]/sum(act_confusion[,3])
+    metrics <- data.frame(accuracy, precision1, precision2, precision3, 
+                          mean_decrease[1],mean_decrease[2],mean_decrease[3],
+                          gini[1], gini[2], gini[3])
+  }else{
+    precision1 <- act_confusion[1]/sum(act_confusion[,1])
+    precision2 <- act_confusion[2,2]/sum(act_confusion[,2])
+    metrics <- data.frame(accuracy, precision1, precision2,
+                          mean_decrease[1],mean_decrease[2],mean_decrease[3],
+                          gini[1], gini[2], gini[3])
+  }
+  
+  
+  #output dataframe of accuracy and precision scores
+  
+  return(metrics)
+}
+
+
+#function to calculate the correct number of clusters for every timestep
+cluster_calc <- function(x){
+  glms <- glms[glms$variable == "ppt" & glms$flow_season == x & glms$ppt_season == x,]
+  
+  if(x == "fall" | x == "spring"){
+    k <- 2
+  }else{
+    k <- 3
+  }
+  groups <- cutree(final_clust, k = k)
+  #compute distance matrix
+  d <- dist(glms, method = "euclidean")
+  #perform hierarchical clustering using Ward's method
+  final_clust <- hclust(d, method = "ward.D2" )
+  
+}
+
+
+
+# Notes from BJA - this function is just used to apply different specific axes to a facetted ggplot object. These come from the scales package, but similar to the above, the code would not work, so I had to make smoe small edits in order for it to run correctly. 
+
+#' Lay out panels in a grid with different scales
+#'
+#' `facet_grid_sc` is a variant of `facet_grid`
+#' @inheritParams ggplot2::facet_grid
+#' @param scales A list of two elements (`x` and `y`). Each element can be either
+#' `"fixed"` (scale limits shared across facets), `"free"` (with varying limits per facet), or
+#'  a named list, with a different scale for each facet value. Previous scale values
+#'  (`"fixed"`, `"free_x"`, `"free_y"`, `"free"` are accepted but soft-deprecated).
+#' @export
+#' @import rlang
+#' @import ggplot2
+#' @examples
+#' library(ggplot2)
+#' library(scales)
+#' # Custom scales per facet:
+#'  mydf <- data.frame(
+#'    Subject = rep(c("A", "B", "C", "D"), each = 3),
+#'    Magnitude = rep(c("SomeValue", "Percent", "Scientific"), times = 4),
+#'    Value=c(c(170,0.6,2.7E-4),
+#'            c(180, 0.8, 2.5E-4),
+#'            c(160, 0.71, 3.2E-4),
+#'            c(159, 0.62, 3E-4)))
+#'
+#'  scales_y <- list(
+#'    Percent = scale_y_continuous(labels=percent_format()),
+#'    SomeValue = scale_y_continuous(),
+#'    Scientific = scale_y_continuous(labels=scientific_format())
+#'  )
+#'
+#'  ggplot(mydf) +
+#'    geom_point(aes(x=Subject, y=Value)) +
+#'    facet_grid_sc(rows = vars(Magnitude), scales = list(y = scales_y))
+#'
+#'
+
+
+
+# Private functions from ggplot2 used in our package
+# Ideally this file would not exist :-)
+
+check_labeller <- ggplot2:::check_labeller
+
+grid_as_facets_list <- ggplot2:::grid_as_facets_list
+
+
+facet_grid_sc <- function(rows = NULL, cols = NULL, scales = "fixed",
+                          space = "fixed", shrink = TRUE,
+                          labeller = "label_value", as.table = TRUE,
+                          switch = NULL, drop = TRUE, margins = FALSE,
+                          facets = NULL) {
+  # `facets` is soft-deprecated and renamed to `rows`
+  if (!is.null(facets)) {
+    rows <- facets
+  }
+  # Should become a warning in a future release
+  if (is.logical(cols)) {
+    margins <- cols
+    cols <- NULL
+  }
+  
+  if (is.list(scales)) {
+    free <- list(
+      x = identical(scales$x, "free") || is.list(scales$x),
+      y = identical(scales$y, "free") || is.list(scales$y)
+    )
+  } else {
+    scales <- match.arg(scales, c("fixed", "free_x", "free_y", "free"))
+    free <- list(
+      x = any(scales %in% c("free_x", "free")),
+      y = any(scales %in% c("free_y", "free"))
+    )
+  }
+  
+  custom_scales <- list(x = NULL, y = NULL)
+  if (is.list(scales)) {
+    # A different scale per facet:
+    if (is.list(scales$x)) {
+      if (is.null(names(scales$x))) {
+        stop("Custom facet scales for x should be named according to facet column values", call. = FALSE)
+      }
+      custom_scales$x <- scales$x
+    }
+    if (is.list(scales$y)) {
+      if (is.null(names(scales$y))) {
+        stop("Custom facet scales for y should be named according to facet row values", call. = FALSE)
+      }
+      custom_scales$y <- scales$y
+    }
+  }
+  
+  space <- match.arg(space, c("fixed", "free_x", "free_y", "free"))
+  space_free <- list(
+    x = any(space %in% c("free_x", "free")),
+    y = any(space %in% c("free_y", "free"))
+  )
+  
+  if (!is.null(switch) && !switch %in% c("both", "x", "y")) {
+    stop("switch must be either 'both', 'x', or 'y'", call. = FALSE)
+  }
+  
+  facets_list <- grid_as_facets_list(rows, cols)
+  
+  # Check for deprecated labellers
+  labeller <- check_labeller(labeller)
+  
+  ggproto(NULL, FacetGridScales,
+          shrink = shrink,
+          params = list(rows = facets_list$rows, cols = facets_list$cols, margins = margins,
+                        scales = custom_scales,
+                        free = free, space_free = space_free, labeller = labeller,
+                        as.table = as.table, switch = switch, drop = drop)
+  )
+}
+
+
+#' ggproto facet
+#'
+#' @export
+FacetGridScales <- ggproto(
+  "FacetGridScales", FacetGrid,
+  init_scales = function(layout, x_scale = NULL, y_scale = NULL, params) {
+    scales <- list()
+    if (!is.null(params$scales$x)) {
+      facet_x_names <- unique(as.character(layout[[names(params$cols)]]))
+      scales$x <- lapply(params$scales$x[facet_x_names], function(x) {
+        new <- x$clone()
+        new$oob <- function(x, ...) x
+        new
+      })
+    } else if (!is.null(x_scale)) {
+      scales$x <- lapply(seq_len(max(layout$SCALE_X)), function(i) x_scale$clone())
+    }
+    if (!is.null(params$scales$y)) {
+      facet_y_names <- unique(as.character(layout[[names(params$rows)]]))
+      scales$y <- lapply(params$scales$y[facet_y_names], function(x){
+        new <- x$clone()
+        new$oob <- function(x, ...) x
+        new
+      })
+    } else if (!is.null(y_scale)) {
+      scales$y <- lapply(seq_len(max(layout$SCALE_Y)), function(i) y_scale$clone())
+    }
+    scales
+  },
+  train_scales = function(x_scales, y_scales, layout, data, params, self) {
+    # Transform data first
+    data <- lapply(data, function(layer_data) {
+      self$finish_data(layer_data, layout,
+                       x_scales, y_scales, params)
+    })
+    
+    # Then use parental method for scale training
+    ggproto_parent(Facet, self)$train_scales(x_scales, y_scales,
+                                             layout, data, params)
+  },
+  finish_data = function(data, layout, x_scales, y_scales, params) {
+    # Divide data by panel
+    panels <- split(data, data$PANEL, drop = FALSE)
+    panels <- lapply(names(panels), function(i) {
+      dat  <- panels[[i]]
+      
+      # Match panel to their scales
+      panel_id <- match(as.numeric(i), layout$PANEL)
+      xidx <- layout[panel_id, "SCALE_X"]
+      yidx <- layout[panel_id, "SCALE_Y"]
+      
+      # Decide what variables need to be transformed
+      y_vars <- intersect(y_scales[[yidx]]$aesthetics, names(dat))
+      x_vars <- intersect(x_scales[[xidx]]$aesthetics, names(dat))
+      
+      # Transform variables by appropriate scale
+      for (j in y_vars) {
+        dat[, j] <- y_scales[[yidx]]$transform(dat[, j])
+      }
+      for (j in x_vars) {
+        dat[, j] <- x_scales[[xidx]]$transform(dat[, j])
+      }
+      dat
+    })
+    
+    # Recombine the data
+    data <- unsplit(panels, data$PANEL)
+    data
+  }
+)
+
+
+
+```
+
+The following section allows for the calculation of elasticity curve data for every individual site using log-log linear models. The output is a csv file of the elasticity curve data for the linear models titled: "lm_results".
+
+```{r single_site_curves, echo = TRUE, warning=FALSE, include = TRUE}
+# NOTE: pre-processing is time consuming and computationally intensive and is therefore not included in this markdown file, but is available upon request. All raw data is publicly 
+# accessible from the data sources described in the text. 
+
+options(scipen=9999)
+
+#read in data as character format because of leading 0s in STAIDs
+# this data contains the pre-processed precipitation and streamflow quantile data
+df <- read.csv("./data/processed_flow.csv", colClasses = "character")
+
+## make flow quantile data numeric
+df <- df %>%
+   mutate_at(vars(c(4:length(df))), as.numeric)
+
+#make site list of unique sites
+sites <- unique(df$STAID)
+
+##create list of all possible formula combos to loop through
+x <- c("seasonal_meanP+seasonal_PET", "annual_meanP+annual_PET")
+
+###make a list of all y values (quantiles names)
+y_list <- names(df)[4:45]
+### add operators
+ys <-  apply(expand.grid(y_list, "~"), 1, paste, collapse=" ")
+
+### combine and convert that into a list of formulas
+forms_yr <- apply(expand.grid(ys[22:42], x[2]), 1, paste, collapse=" ")
+forms_seas <- apply(expand.grid(ys[1:21], x[1]), 1, paste, collapse=" ")
+formulas <- append(forms_yr, forms_seas)
+
+#reorder y values
+ys <- ys[c(22:42, 1:21)]
+
+##create a list with all possible season and staid pairs to loop through
+seas <- c("annual", "winter", "spring", "summer", "fall")
+loop_vals <- expand.grid(sites, seas)
+
+loop_vals <- split(loop_vals, seq(nrow(loop_vals)))
+
+#apply calculation function to all of the sites and return data frame containing elasticity curve data for all sites and time periods.
+#function is listed in "functions" section
+all_df <- lapply(loop_vals, multi_glm)
+all_glm <- do.call(rbind, all_df)
+
+#save as csv
+data.table::fwrite(all_glm, "./data/lm_results.csv", row.names = F) # way, way faster
+
+#test percentage that pass assumtions
+durb_test <- all_glm %>%
+  group_by(Q, durb > 1)%>%
+  summarise(n = n())%>%
+  group_by(Q)%>%
+  mutate(sum = n/sum(n))
+durb_test <- durb_test[durb_test$`durb > 1` == "TRUE",]
+
+norm_test <- all_glm %>%
+  group_by(Q, norm > 0.9)%>%
+  summarise(n = n())%>%
+  group_by(Q)%>%
+  mutate(sum = n/sum(n))
+norm_test <- norm_test[norm_test$`norm > 0.9` == "TRUE",]
+
+```
+
+The following normalizes the lm-generated elasticity curve data prior to the application of a clustering algorithm. The output is a csv file of normalized data called: "normalized_curves". 
+
+```{r curve_normalization, echo = TRUE, warning=FALSE, include = TRUE}
+
+# this loads curve data and normalizes it, then saves normalized curves to csv
+options(scipen=9999)
+
+##load raw linear model generate curve data
+glms <- read.csv("./data/lm_results.csv", colClasses = "character")
+
+glms <- glms %>%
+  mutate_at(vars(1:6), as.numeric)
+
+glms <- glms[-c(2:6, 12:13)] # remove values which vary on every line
+
+#normalize curves to the min flow elasticity
+glms <- glms%>%
+  group_by(STAID, flow_season)%>%
+  mutate(coef = (coef-(coef[Q == "0"])))
+
+# reshape to wide format
+glms <- glms %>%
+  pivot_wider(names_from = Q, values_from = coef)
+head(glms)
+
+#convert all to numeric values
+glms <- glms %>%
+  mutate_at(vars(5:length(glms)), as.numeric)
+
+#save as csv so that the df can have row names assigned
+write.csv(glms, "./data/normalized_curves.csv", row.names = F)
+
+```
+
+Using the data created in the previous snippet, generate final clusters. save final clusters to csv file called: "clusters".
+This is performed in a loop assuming that the final cluster counts have been pre-selected.
+
+```{r cluster_final_fit, echo = TRUE, warning=FALSE, include = TRUE}
+rm(list = ls()[sapply(ls(), function(x) length(dim(get(x))) > 1)])
+df <- read.csv("./data/normalized_curves.csv", colClasses = "character")
+
+slope <- df%>%
+  group_by(STAID)%>%
+  summarise(slope = (as.numeric(X100)))
+
+time_step <- c("fall", "winter", "spring",   "summer", "annual")
+
+#function to calculate the correct number of clusters for every timestep where k is preordained and x is the timescale name
+cluster_calc <- function(x){#x <- time_step[1]
+  glms <- df[df$variable == "ppt" & df$flow_season == x & df$ppt_season == x,]
+  rownames(glms) <- c(glms$STAID) #asign row names as STAID
+
+  glms <- glms[-c(1:4)]
+
+    head(glms)
+
+  glms <- glms %>%
+    mutate_at(vars(1:length(glms)), as.numeric)
+
+  glms <- na.omit(glms)
+
+
+  #set the number of clusters per temporal scale
+  if(x == "fall" | x == "spring"){
+    k <- 2
+  }else{
+    k <- 3
+  }
+
+  #compute distance matrix
+  d <- dist(glms, method = "euclidean")
+  #perform hierarchical clustering using Ward's method
+  final_clust <- hclust(d, method = "ward.D2" )
+  groups <- cutree(final_clust, k = k)
+
+  #convert to dataframe with staid labels
+  final_data <- data.frame(cluster = groups)
+  final_data$STAID <- row.names(final_data)
+  final_data$season <- x
+
+
+
+  return(final_data)
+}
+
+clusters <- lapply(time_step, cluster_calc)
+clusters <- do.call(rbind, clusters)
+
+clusters <- merge(clusters, slope, by = "STAID")
+
+data.table::fwrite(clusters, "./data/clusters.csv", row.names = F)
+
+```
+
+Fit panel regression models using the outcomes of the lm clustering analysis as moderating variables. The output will be a csv file containing the elasticity curve data as estimated by the panel model titled: "clustered_plm". 
+
+```{r plm_curves, echo = TRUE, warning=FALSE, include = TRUE}
+options(scipen=9999)
+rm(list = ls()[sapply(ls(), function(x) length(dim(get(x))) > 1)])
+
+# load the structured flow data
+df <- read.csv("./data/processed_flow.csv", colClasses = "character")
+
+#make numeric where appropriate
+df <- df %>%
+  mutate_at(vars(c(4:length(df))), as.numeric)
+
+#load cluster data
+clusters <- read.csv("./data/clusters.csv", colClasses = "character")
+
+# generate 2 column list of all possible season and column number combinations 
+QL <- seq(4, 24, 1)
+seasons <- c("winter", "spring", "summer", "fall")
+
+QL <- expand.grid(QL,  seasons)
+
+aL <- seq(25, 45, 1)
+aL <- expand.grid(aL,  "annual")
+
+QL <- rbind(QL, aL)
+
+QL <- split(QL, seq(nrow(QL)))
+
+#apply function which is currently stored in "functions" section
+plm_results <- lapply(1:length(QL), multi_plm, d = df)
+plm_results <- do.call(rbind, plm_results)
+
+write.csv(plm_results, "./data/clustered_plm.csv", row.names = F)
+```
+
+Fit random forest model to look at feature importance and ability to classify the curves into the appropriate clusters. The output is a text file titled "performance" containing the average accuracy and precision scores for each season, as well as the top 3 variables in each model run.
+
+```{r RF_model, include = TRUE, echo = TRUE}
+options(scipen=9999)
+rm(list = ls()[sapply(ls(), function(x) length(dim(get(x))) > 1)])
+
+#load moderator data generated in previous step
+df <- read.csv("./data/mods.csv", colClasses = "character")
+
+## read in clusters
+cluster <- read.csv("./data/clusters.csv", colClasses = "character")
+
+#combine dataframes 
+df <- merge(df, cluster[1:3], by = c("STAID")) %>% distinct()
+
+#make numeric where relevant
+df <- df %>%
+  mutate_at(vars(c(2:6, 11:20, 23:29)), as.numeric)
+
+#make factor where relevant 
+df$season_gapmax <- factor(paste0(df$max_flow, "_", df$max_pptseason))
+df$season_gapmin <- factor(paste0(df$min_flow, "_", df$min_pptseason))
+df$season_gapmin_max <- factor(paste0(df$min_flow, "_", df$max_pptseason))
+
+#remove NA rows
+df <- na.omit(df)
+
+# create a count df
+count <- df %>%
+  group_by(season,cluster)%>%
+  summarise(count = n_distinct(STAID))
+count
+
+#iterate through samples and fit random forest model 10 times for every temporal scale using "iter_rf" defined in "functions"
+time_stamp <- c("annual", "spring", "winter", "summer", "fall")
+for (x in time_stamp){
+ test <- replicate(n=10, expr = iter_rf(season = x,
+                                       x = round(min(count$count)*.9), # use 80% of the smallest cluster size to train
+                                       y = (min(count$count)-round(min(count$count)*.9))), simplify = "data.frame")# and 20% to test
+test <- as.data.frame(test %>%t())
+test
+average <- test %>%
+  summarise(season = x,
+            accuracy = mean(as.numeric(test$accuracy)),
+            pr1 = mean(as.numeric(test$precision1)),
+            pr2 = mean(as.numeric(test$precision2)),
+            pr3 = mean(as.numeric(test$precision3)),
+            gini1 = as.character(list(unique(test$gini.1.))),
+            gini2 = as.character(list(unique(test$gini.2.))),
+            gini3 = as.character(list(unique(test$gini.3.))),
+            mean_decrease1 = as.character(list(unique(test$mean_decrease.1.))),
+            mean_decrease2 = as.character(list(unique(test$mean_decrease.2.))),
+            mean_decrease3 = as.character(list(unique(test$mean_decrease.3.))))
+
+data.table::fwrite(average, "./data/performance.txt", row.names = F, append = T )
+}
+```
