@@ -9,5 +9,5 @@ This is provided with a small subsample of the preprocessed data, thus the resul
 2. The data contains: 
 1 preprocessed streamflow file containing daily flow percentile and climatological data adapted from PRISM: "processed_flow_sample" and one file containing 
     catchment attributes data: "mods" which were compiled and processed separately. 
-2. To run the script, change the "root.dir" to the complete file path of where you've stored this data. 
+2. To run the script, change the "root.dir" to the complete file path of where you've stored this data and *ensure that the data is stored in a subfolder titled "data"*
 3. "knit" the document
