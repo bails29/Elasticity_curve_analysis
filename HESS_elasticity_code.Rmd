@@ -5,7 +5,7 @@ date: "`r Sys.Date()`"
 output: html_document
 ---
 
-```{r setup, echo = TRUE, message = TRUE, warning = FALSE}
+```{r setup, echo = FALSE, message = TRUE, warning = FALSE}
 knitr::opts_chunk$set(
 	echo = TRUE,
 	message = TRUE,
@@ -16,22 +16,22 @@ knitr::opts_knit$set(root.dir = ".")
 
 This script performs the analysis associated with the the manuscript titled: Elasticity curves describe streamflow sensitivity to precipitation across the entire flow distribution, submitted to HESS in 2022. 
 
-```{r preamble,  results='hide'}
+```{r preamble, message=FALSE, warning=FALSE, results='hide', echo = FALSE}
 #set up the code and read in libraries.
 rm(list=ls(all=TRUE))
 
 # Clear the Console
 cat("\014")
 
-library(dataRetrieval); library(dplyr);  library(tidyr); library(tools); library(data.table); library(prism);
+library(dplyr);  library(tidyr); library(tools); library(data.table);
 library(ggplot2); library(lubridate); library(delayedflow); library(ggpubr); library(rstatix); library(car); library(scales);
-library(ggridges); library(rgdal); library(stringr); library(patchwork); library(factoextra);library(cluster); library(plm); library(raster); library(lmtest); library(gtools); library(randomForest); library(varImp); library(smotefamily); library(lemon); library(kableExtra)
+library(ggridges); library(stringr); library(patchwork); library(factoextra);library(cluster); library(plm);  library(lmtest); library(gtools); library(randomForest); library(varImp); library(smotefamily); library(lemon); library(kableExtra)
 
 ```
 
-A series of functions were created to complete this work. These have not yet been converted into a package, and are included here in order to make this file self contained. These are used throughout the subsequent sections. 
+A series of functions were created to complete this work. These have not yet been converted into a package, and are included here in order to make this file self contained. These are used throughout the subsequent sections. These are not printed in the markdown file.
 
-```{r functions, echo = TRUE, message=FALSE, warning=FALSE,  results='hide'}
+```{r functions, echo = FALSE, message=FALSE, warning=FALSE,  results='hide'}
 #####################################################################
 # Section 1: these functions were made by the authors of this paper #
 #####################################################################
@@ -78,13 +78,9 @@ multi_glm <- function(l, forms = formulas, dataframe = df){ #l <- loop_vals[[1]]
       norm <- shapiro.test(v)
       durb <- durbinWatsonTest(v)
       
-      #extract standard errors and P values in sunken env to hide print outs. 
-      sink("~temp.txt")
-      #se <- summary(res)[,2][2:3]
+      #get standard errors and p values
       se <- summary(res)[[4]][2:3,2]
-      #p <- summary(res)[,4][2:3]
       p <- summary(res)[[4]][2:3,4]
-      sink()
 
       #extract aic, r squared, coefficients (elasticity)
       aic <- AIC(res)
@@ -131,8 +127,8 @@ multi_glm <- function(l, forms = formulas, dataframe = df){ #l <- loop_vals[[1]]
   
   finish <- Sys.time()
   #print total run time
-  print(as.character(x)); print(as.character(s));print(which(sites == x)); print(finish-start)
-  file.remove("~temp.txt")
+  # print(as.character(x)); print(as.character(s));print(which(sites == x)); print(finish-start)
+  #file.remove("~temp.txt")
   
   #return complete e[c] data
   return(all_res)
@@ -140,7 +136,7 @@ multi_glm <- function(l, forms = formulas, dataframe = df){ #l <- loop_vals[[1]]
 }
 
 
-#funciton to cluster data into a number of different clusters so you can look at the geographic distributions of different cluster divisions. 
+#function to cluster data into a number of different clusters so you can look at the geographic distributions of different cluster divisions. 
 # where "k" is a list of values (e.g. 2:50
 auto_cluster <- function(k){
   
@@ -166,14 +162,12 @@ auto_cluster <- function(k){
 # where "Qlinc" is a 2 column list value containing the staid and relevant season and "d" is a dataframe
 # containing panel formatted (long format) streamflow quantile and climatological data
 multi_plm <-function(QLinc, d){# d <- df; QLinc <- 100
-  print(QLinc)
   keep <-  QL[[QLinc]][[2]]
   keep
   
   Q <- QL[[QLinc]][[1]]
   nQ <- names(d[Q])
   k <- d[Q]
-  head(k)
   
   season <-  QL[[QLinc]][[2]]
   season
@@ -563,7 +557,7 @@ FacetGridScales <- ggproto(
 
 The following section allows for the calculation of elasticity curve data for every individual site using log-log linear models. The output is a csv file of the elasticity curve data for the linear models titled: "lm_results".
 
-```{r single_site_curves, echo = TRUE, warning=FALSE,  results='hide'}
+```{r single_site_curves, echo=TRUE, message=FALSE, warning=FALSE}
 # NOTE: pre-processing is time consuming and computationally intensive and is therefore not included in this markdown file, but is available upon request. All raw data is publicly 
 # accessible from the data sources described in the text. 
 
@@ -624,12 +618,12 @@ norm_test <- all_glm %>%
   group_by(Q)%>%
   mutate(sum = n/sum(n))
 norm_test <- norm_test[norm_test$`norm > 0.9` == "TRUE",]
-
+head(all_glm)
 ```
 
 The following normalizes the lm-generated elasticity curve data prior to the application of a clustering algorithm. The output is a csv file of normalized data called: "normalized_curves". 
 
-```{r curve_normalization, echo = TRUE, warning=FALSE,  results='hide'}
+```{r curve_normalization, echo=TRUE, message=FALSE, warning=FALSE}
 
 # this loads curve data and normalizes it, then saves normalized curves to csv
 options(scipen=9999)
@@ -658,13 +652,13 @@ glms <- glms %>%
 
 #save as csv so that the df can have row names assigned
 write.csv(glms, "./data/normalized_curves.csv", row.names = F)
-
+head(glms)
 ```
 
 Using the data created in the previous snippet, generate final clusters. save final clusters to csv file called: "clusters".
 This is performed in a loop assuming that the final cluster counts have been pre-selected.
 
-```{r cluster_final_fit, echo = TRUE, warning=FALSE,  results='hide'}
+```{r cluster_final_fit, echo=TRUE, message=FALSE, warning=FALSE, results='hide'}
 rm(list = ls()[sapply(ls(), function(x) length(dim(get(x))) > 1)])
 df <- read.csv("./data/normalized_curves.csv", colClasses = "character")
 
@@ -718,12 +712,12 @@ clusters <- do.call(rbind, clusters)
 clusters <- merge(clusters, slope, by = "STAID")
 
 data.table::fwrite(clusters, "./data/clusters.csv", row.names = F)
-
+head(clusters)
 ```
 
 Fit panel regression models using the outcomes of the lm clustering analysis as moderating variables. The output will be a csv file containing the elasticity curve data as estimated by the panel model titled: "clustered_plm". 
 
-```{r plm_curves, echo = TRUE, warning=FALSE,  results='hide'}
+```{r plm_curves, echo=TRUE, message=FALSE, warning=FALSE, results='hide'}
 options(scipen=9999)
 rm(list = ls()[sapply(ls(), function(x) length(dim(get(x))) > 1)])
 
@@ -755,6 +749,7 @@ plm_results <- lapply(1:length(QL), multi_plm, d = df)
 plm_results <- do.call(rbind, plm_results)
 
 write.csv(plm_results, "./data/clustered_plm.csv", row.names = F)
+head(plm_results)
 ```
 
 Fit random forest model to look at feature importance and ability to classify the curves into the appropriate clusters. The output is a text file titled "performance" containing the average accuracy and precision scores for each season, as well as the top 3 variables in each model run.
@@ -812,5 +807,6 @@ average <- test %>%
             mean_decrease3 = as.character(list(unique(test$mean_decrease.3.))))
 
 data.table::fwrite(average, "./data/performance.txt", row.names = F, append = T )
+head(average)
 }
 ```
