@@ -11,7 +11,7 @@ knitr::opts_chunk$set(
 	message = TRUE,
 	warning = FALSE
 )
-knitr::opts_knit$set(root.dir = "C:/Users/lina3120/Documents/temp_projects/elasticity_curve/scripts/final_scripts/toy_example")
+knitr::opts_knit$set(root.dir = ".")
 ```
 
 This script performs the analysis associated with the the manuscript titled: Elasticity curves describe streamflow sensitivity to precipitation across the entire flow distribution, submitted to HESS in 2022. 
