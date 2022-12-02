@@ -5,7 +5,7 @@ Thismarkdown file includes subsections with relevant functions, calculation of e
 
 1. To run this script, download the associated files
 2. The data contains: 
-1 preprocessed streamflow file containing daily flow percentile and climatological data adapted from PRISM: "flow_data_rewrite" and one file containing 
+1 preprocessed streamflow file containing daily flow percentile and climatological data adapted from PRISM: "processed_flow_sample" and one file containing 
     catchment attributes data: "mods" which were compiled and prcessed separately. 
 2. To run the script, change the "root.dir" to the complete file path of where you've stored this data. 
 3. "knit" the document
