@@ -5,9 +5,8 @@ The associated markdown file includes subsections with relevant functions, calcu
 
 This is provided with a small subsample of the preprocessed data, thus the results will differ somewhat from those in the paper. 
 
+Note: the delayedflow package is only available on github as of December 2, 2022: https://modche.github.io/delayedflow/
+
 1. To run this script, download the associated files
-2. The data contains: 
-1 preprocessed streamflow file containing daily flow percentile and climatological data adapted from PRISM: "processed_flow_sample" and one file containing 
-    catchment attributes data: "mods" which were compiled and processed separately. 
-2. To run the script, change the "root.dir" to the complete file path of where you've stored this data and *ensure that the data is stored in a subfolder titled "data"*
+2. The data contains: one preprocessed streamflow file containing daily flow percentile and climatological data adapted from PRISM: "processed_flow_sample.csv" and one file containing catchment attributes data: "mods.csv" which were compiled and processed separately. 
 3. "knit" the document
